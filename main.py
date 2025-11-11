@@ -7,7 +7,7 @@ import csv
 
 # --- Hyperparameters ---
 NUM_NODES = 5
-MAX_EPISODES = 500
+MAX_EPISODES = 100
 MAX_STEPS_PER_EPISODE = 50
 BATCH_SIZE = 64
 TRAINING_START_STEP = 500
@@ -25,6 +25,7 @@ def main():
     # 1. Initialize Environment and Agent
     env = WMNEnvironment(num_nodes=NUM_NODES)
     agent = SelfCoordinatedMADDPG(env)
+
     
     global_step = 0
     all_rewards, all_delays, all_powers = [], [], []

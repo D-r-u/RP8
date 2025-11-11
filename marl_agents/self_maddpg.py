@@ -67,10 +67,34 @@ class SelfCoordinatedMADDPG:
         return F.softmax(y, dim=-1)
 
     # --- Self-coordination signal ---
-    def _get_coordination_signals(self, states):
+    def _get_coordination_signals(self, states, mode="soft"):
         global_state_flat = states.flatten(start_dim=1)
         coord_signal = global_state_flat.unsqueeze(1).repeat(1, self.N, 1)
+
+        if mode == "diag0":  # Remove self influence
+            for i in range(self.N):
+                coord_signal[:, i, i * self.state_dim:(i + 1) * self.state_dim] = 0
+
+        elif mode == "diag1":  # Only self
+            new_signal = torch.zeros_like(coord_signal)
+            for i in range(self.N):
+                new_signal[:, i, i * self.state_dim:(i + 1) * self.state_dim] = \
+                    global_state_flat[:, i * self.state_dim:(i + 1) * self.state_dim]
+            coord_signal = new_signal
+
+        elif mode == "binary":  # Example: limited adjacency (ring structure)
+            new_signal = torch.zeros_like(coord_signal)
+            for i in range(self.N):
+                left = (i - 1) % self.N
+                right = (i + 1) % self.N
+                for neighbor in [left, right]:
+                    new_signal[:, i, neighbor * self.state_dim:(neighbor + 1) * self.state_dim] = \
+                        global_state_flat[:, neighbor * self.state_dim:(neighbor + 1) * self.state_dim]
+            coord_signal = new_signal
+
+        # 'soft' = default (no change)
         return coord_signal
+
 
     # --- Choose actions ---
     def choose_actions(self, states):
