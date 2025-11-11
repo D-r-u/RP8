@@ -89,7 +89,7 @@ class WMNEnvironment:
         next_states = self.get_full_state()
         
         # 3. Calculate Reward (The complex part - based on paper's function)
-        reward, total_delay, total_power = self._calculate_reward(next_states)
+        reward, total_delay, total_power = self._calculate_reward(next_states, mode="balanced")
         
         # 4. Done condition (simplified to fixed number of steps)
         done = False 
@@ -97,39 +97,57 @@ class WMNEnvironment:
         # We return a single global reward for centralized training
         return next_states, reward, done, {'total_delay': total_delay, 'total_power': total_power}
     
-    def _calculate_reward(self, states):
-        """Implements the paper's custom reward function (R(S))."""
-        
-        # Aggregate Power and Delay from the states
-        # Assuming the state is [Power, Delay, Interference, SINR_min]
-        P_t = states[:, 0].sum() # Total Power Consumption
-        T_S = states[:, 1].mean() # Average E2E Delay (Approximation)
+    def _calculate_reward(self, states, mode="balanced"):
+        """
+        Computes the reward for the current environment state.
 
-        # Hyper-parameters from the paper (or chosen values)
+        mode:
+            "balanced"  → stable, power–delay tradeoff reward (recommended)
+            "gaussian"  → purely fitness-based reward for comparison
+        """
+        # Extract metrics
+        P_t = states[:, 0].sum()  # total power
+        T_S = states[:, 1].mean() # average delay
+
+        # Avoid numerical issues
+        P_t = max(P_t, 1e-6)
+
+        # Reward hyperparameters
         w1, w2, w3 = 0.4, 0.4, 0.2
-        
-        # --- ADJUSTED TARGETS BASED ON OBSERVATION ---
-        # Observed P_t ~ 200, so mu1 is set to log(200) ~ 5.3
-        # Observed T_S ~ 25, so mu2 is set to 25.0
-        mu1, mu2 = 5.3, 25.0 
-        # --- END ADJUSTED TARGETS ---
-        
-        sigma1, sigma2 = 0.1, 0.1
-        
-        # Ensure total power is non-zero before taking log
-        log_Pt = np.log(P_t) if P_t > 1e-6 else np.log(1e-6)
+        mu1, mu2 = 5.3, 25.0
+        sigma1, sigma2 = 0.8, 6.0
 
-        # Term 1: Minimize Power (Negative Log)
-        term1 = -w1 * log_Pt
-        
-        # Term 2: Minimize Delay (Linear)
-        term2 = -w2 * T_S
-        
-        # Term 3: Gaussian Fitness (Encourage balance near the targets)
-        power_norm = (log_Pt - mu1) / sigma1
-        delay_norm = (T_S - mu2) / sigma2
-        term3 = w3 * np.exp(-0.5 * (power_norm**2 + delay_norm**2))
-        
-        reward = term1 + term2 + term3
-        
+        # Compute logarithmic term safely
+        log_Pt = np.log(P_t + 1e-6)
+
+        # --- OPTION 1: Balanced Reward (default) ---
+        if mode == "balanced":
+            # Primary reward components
+            term1 = -w1 * np.log(P_t + 1.0)  # penalize excessive power, but stable near zero
+            term2 = -w2 * T_S                # penalize large delay
+
+            # Gaussian fitness to encourage target balance
+            power_norm = (log_Pt - mu1) / sigma1
+            delay_norm = (T_S - mu2) / sigma2
+            term3 = w3 * np.exp(-0.5 * (power_norm**2 + delay_norm**2))
+
+            reward = term1 + term2 + term3
+
+            # --- NEW ADDITION: Penalize zero or too-low power ---
+            if P_t < 50:  # depends on N and MAX_POWER
+                reward -= 100  # large penalty for communication breakdown
+
+        # --- OPTION 2: Gaussian-Only Reward ---
+        elif mode == "gaussian":
+            power_norm = (log_Pt - mu1) / sigma1
+            delay_norm = (T_S - mu2) / sigma2
+            reward = np.exp(-0.5 * (power_norm**2 + delay_norm**2))
+            # normalize range ~[0,1]
+            reward = float(reward)
+            # scale to match approximate magnitude of other version
+            reward *= 100
+
+        else:
+            raise ValueError("Unknown reward mode. Use 'balanced' or 'gaussian'.")
+
         return reward, T_S, P_t

@@ -2,6 +2,8 @@ from environment.wmn_env import WMNEnvironment
 from marl_agents.self_maddpg import SelfCoordinatedMADDPG
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+import csv
 
 # --- Hyperparameters ---
 NUM_NODES = 5
@@ -9,6 +11,8 @@ MAX_EPISODES = 500
 MAX_STEPS_PER_EPISODE = 50
 BATCH_SIZE = 64
 TRAINING_START_STEP = 500
+EVAL_EPISODES = 20
+EVAL_STEPS = 50
 
 def smooth(y, box_pts=5):
     """Simple moving average for smoothing curves."""
@@ -64,7 +68,7 @@ def main():
                   f"Avg Reward (10): {avg_reward:.2f} | "
                   f"Last Delay: {episode_delay:.2f} | Last Power: {episode_power:.2f}")
 
-    print("Training Complete ✅")
+    print("Training Complete!!!")
 
     # --- After training: plotting section ---
     episodes = np.arange(1, len(all_rewards) + 1)
@@ -118,6 +122,74 @@ def main():
 
     plt.show()
     print("Plots saved: reward_curve.png, power_curve.png, delay_curve.png, summary_curve.png")
+
+    # =======================
+    #  EVALUATION PHASE
+    # =======================
+    print("\nStarting Deterministic Evaluation Run...")
+
+    # Set all actors to eval mode
+    for actor in agent.actors:
+        actor.eval()
+
+    eval_results = []
+    per_agent_logs = {i: {"powers": [], "delays": [], "actions": []} for i in range(NUM_NODES)}
+
+    for ep in range(1, EVAL_EPISODES + 1):
+        states = env.reset()
+        episode_reward, episode_delay, episode_power = 0.0, 0.0, 0.0
+
+        for t in range(EVAL_STEPS):
+            # deterministic (argmax) actions
+            states_tensor = torch.tensor(states, dtype=torch.float32).unsqueeze(0)
+            coord_signals = agent._get_coordination_signals(states_tensor)
+            actions = []
+
+            for i in range(agent.N):
+                local_state = states_tensor[:, i, :]
+                coord_signal = coord_signals[:, i, :]
+                probs = agent.actors[i](local_state, coord_signal)
+                action = torch.argmax(probs, dim=1).item()
+                actions.append(action)
+                per_agent_logs[i]["actions"].append(action)
+
+            next_states, reward, done, info = env.step(actions)
+            episode_reward += reward
+            episode_delay = info["total_delay"]
+            episode_power = info["total_power"]
+
+            for i in range(agent.N):
+                per_agent_logs[i]["powers"].append(float(next_states[i][0]))
+                per_agent_logs[i]["delays"].append(float(next_states[i][1]))
+
+            states = next_states
+            if done:
+                break
+
+        eval_results.append({
+            "episode": ep,
+            "total_reward": episode_reward,
+            "total_power": episode_power,
+            "total_delay": episode_delay
+        })
+        print(f"[Eval] Episode: {ep:3d} | Reward: {episode_reward:.2f} | Power: {episode_power:.2f} | Delay: {episode_delay:.2f}")
+
+    # Save episode-level evaluation logs
+    with open("evaluation_log.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Episode", "TotalReward", "TotalPower", "TotalDelay"])
+        for res in eval_results:
+            writer.writerow([res["episode"], res["total_reward"], res["total_power"], res["total_delay"]])
+
+    # Per-agent summaries
+    print("\nPer-Agent Evaluation Summary:")
+    for i in range(NUM_NODES):
+        avg_power = np.mean(per_agent_logs[i]["powers"])
+        avg_delay = np.mean(per_agent_logs[i]["delays"])
+        action_counts = np.bincount(per_agent_logs[i]["actions"], minlength=3)
+        print(f"  Agent {i+1}: AvgPower={avg_power:.2f}, AvgDelay={avg_delay:.2f}, ActionDist={action_counts}")
+
+    print("\n Evaluation complete. Results saved to 'evaluation_log.csv'.")
 
 if __name__ == '__main__':
     main()
